@@ -938,6 +938,11 @@ async function loadTrip(){
   ensureMqttForActive();
 }
 
+function googleNavUrl(lat,lng){
+  // Google Maps 官方通用 Directions URL：手機有 Google Maps 時通常會交給 App，否則開網頁版。
+  return 'https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(lat+','+lng)+'&travelmode=driving';
+}
+
 function renderHome(){
   if(!active)return;
   if(!homeMap){
@@ -961,16 +966,22 @@ function renderHome(){
   const pts=[];
   if(active.meeting.lat!=null && active.meeting.lng!=null){
     const startIcon=L.divIcon({className:'',html:'<div class="start-goal-icon">🚩</div>',iconSize:[34,34],iconAnchor:[9,30]});
-    markers.meet=L.marker([active.meeting.lat,active.meeting.lng],{icon:startIcon,zIndexOffset:700}).addTo(homeMap).bindPopup('<b>起點</b><br>'+esc(active.meeting.name));
+    markers.meet=L.marker([active.meeting.lat,active.meeting.lng],{icon:startIcon,zIndexOffset:700}).addTo(homeMap).bindPopup(
+      '<b>起點</b><br>'+esc(active.meeting.name)+
+      '<br><a class="btn btn-sm btn-primary mt-2" target="_blank" rel="noopener" href="'+googleNavUrl(active.meeting.lat,active.meeting.lng)+'">🧭 Google 導航到起點</a>'
+    );
     pts.push([active.meeting.lat,active.meeting.lng]);
   }
   if(active.destination.lat!=null && active.destination.lng!=null){
     const goalIcon=L.divIcon({className:'',html:'<div class="goal-marker-wrap"><div class="goal-marker-flag">🏁</div><div class="goal-marker-label">終</div></div>',iconSize:[40,40],iconAnchor:[20,35]});
-    markers.dest=L.marker([active.destination.lat,active.destination.lng],{icon:goalIcon,zIndexOffset:700}).addTo(homeMap).bindPopup('<b>終｜Goal 終點</b><br>'+esc(active.destination.name));
+    markers.dest=L.marker([active.destination.lat,active.destination.lng],{icon:goalIcon,zIndexOffset:700}).addTo(homeMap).bindPopup(
+      '<b>終｜Goal 終點</b><br>'+esc(active.destination.name)+
+      '<br><a class="btn btn-sm btn-primary mt-2" target="_blank" rel="noopener" href="'+googleNavUrl(active.destination.lat,active.destination.lng)+'">🧭 Google 導航到終點</a>'
+    );
     pts.push([active.destination.lat,active.destination.lng]);
   }
   const live=isLiveTrackingWindow(active);
-  homeInfo.innerHTML=`<div class="trip-summary"><b>${active.mode==='taxi'?'🚕':'🚗'} 共乘行程</b><div class="trip-line"><span>🚩</span><span>${esc(active.meeting.name)}</span></div><div class="trip-line"><span>🏁</span><span>${esc(active.destination.name)}</span></div><div>👥 ${active.currentPeople}/${active.maxPeople} 人</div></div><div id="liveTrackingStatus" class="live-track">📡 即時定位同步中</div><div class="mt-2"><button class="btn btn-sm btn-outline-primary" onclick="requestLocationNow()">📍 更新我的位置</button></div><div id="liveTrackingLegend" class="live-legend"></div><div id="routeSummary" class="route-summary">🛣️ 正在規劃道路路線…</div>`;
+  homeInfo.innerHTML=`<div class="trip-summary"><b>${active.mode==='taxi'?'🚕':'🚗'} 共乘行程</b><div class="trip-line"><span>🚩</span><span>${esc(active.meeting.name)}</span></div><div class="trip-line"><span>🏁</span><span>${esc(active.destination.name)}</span></div><div>👥 ${active.currentPeople}/${active.maxPeople} 人</div></div><div id="liveTrackingStatus" class="live-track">📡 即時定位同步中</div><div class="mt-2 d-flex flex-wrap gap-2"><button class="btn btn-sm btn-outline-primary" onclick="requestLocationNow()">📍 更新我的位置</button>${active.meeting.lat!=null&&active.meeting.lng!=null?`<a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="${googleNavUrl(active.meeting.lat,active.meeting.lng)}">🧭 導航到起點</a>`:''}${active.destination.lat!=null&&active.destination.lng!=null?`<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="${googleNavUrl(active.destination.lat,active.destination.lng)}">🧭 導航到終點</a>`:''}</div><div id="liveTrackingLegend" class="live-legend"></div><div id="routeSummary" class="route-summary">🛣️ 正在規劃道路路線…</div>`;
   // 先把快取中的成員位置立即畫回來，避免等待 API 時畫面只剩起終點。
   for(const loc of liveLocationCache.values())upsertLiveLocation(loc);
   fitHomeToAll();
