@@ -265,6 +265,23 @@ def join_ride(request,ride_id):
         if RideMember.objects.filter(ride=r).count()>=r.max_people:r.status='full';r.save(update_fields=['status','updated_at'])
     return JsonResponse({'ride':ride_json(r,p)})
 @csrf_exempt
+def leave_ride(request,ride_id):
+    if request.method!='POST':return HttpResponseNotAllowed(['POST'])
+    p=profile(request)
+    with transaction.atomic():
+        r=Ride.objects.select_for_update().get(id=ride_id)
+        if r.owner_id==p.id:
+            return JsonResponse({'error':'建立者不能退出自己的共乘，請使用取消募集。'},status=409)
+        deleted,_=RideMember.objects.filter(ride=r,profile=p).delete()
+        if not deleted:
+            return JsonResponse({'error':'你尚未加入這筆共乘'},status=409)
+        # 原本因額滿而標記 full，成員退出後重新開放名額。
+        if r.status=='full':
+            r.status='open'
+            r.save(update_fields=['status','updated_at'])
+    return JsonResponse({'ok':True})
+
+@csrf_exempt
 def cancel_ride(request,ride_id):
     if request.method!='POST':return HttpResponseNotAllowed(['POST'])
     p=profile(request);r=get_object_or_404(Ride,id=ride_id)
