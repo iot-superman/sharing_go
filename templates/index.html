@@ -909,6 +909,7 @@ async function loadTrip(){
 
   // vNext：訊息與定位改由 refresh() 各自節流；loadTrip 不再造成連鎖 API 請求或 GPS 重複寫入。
   ensureMqttForActive();
+}
 
 function renderHome(){
   if(!active)return;
