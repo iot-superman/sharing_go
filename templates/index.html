@@ -259,7 +259,11 @@ function addDualBasemap(m){
   if(carto)bases['🚗 CARTO Voyager']=carto;
 
   const pref=localStorage.getItem(MAP_PREF_KEY);
-  let current=(pref==='carto'&&carto)?carto:(pref==='esri'?esri:osm);
+  // Render/目前瀏覽器環境的 OSM volunteer tiles 會回 403。
+  // 未曾手動選擇底圖時直接使用 Esri，避免先畫滿 403 blocked 圖磚。
+  // 若使用者明確選 CARTO/Esri 則尊重選擇；舊的 osm 偏好也自動升級到 Esri。
+  let current=(pref==='carto'&&carto)?carto:esri;
+  if(pref==='osm')localStorage.setItem(MAP_PREF_KEY,'esri');
   current.addTo(m);
 
   const ctl=L.control.layers(bases,null,{collapsed:true,position:'topright'}).addTo(m);
@@ -296,9 +300,9 @@ function addDualBasemap(m){
   osm.on('tileerror',()=>{
     osmErrors++;
     if(!m.hasLayer(osm))return;
-    const fallback=carto||esri;
-    const fallbackName=carto?'CARTO Voyager':'Esri World Street Map';
-    const fallbackKey=carto?'carto':'esri';
+    const fallback=esri;
+    const fallbackName='Esri World Street Map';
+    const fallbackKey='esri';
     if(osmErrors>=2){
       if(osmFallbackTimer)clearTimeout(osmFallbackTimer);
       switchTo(fallback,fallbackName,fallbackKey,'OSM 圖磚遭封鎖或載入失敗');
