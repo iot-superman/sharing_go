@@ -223,6 +223,13 @@ function makeOsmLayer(){
     attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors'
   });
 }
+function makeEsriLayer(){
+  // 第三備援底圖：當 OSM 回 403、CARTO 也不可用時自動切換。
+  return L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',{
+    maxZoom:19,
+    attribution:'Tiles &copy; Esri'
+  });
+}
 function makeCartoLayer(){
   const key=getCartoKey();
   if(!key)return null;
@@ -247,25 +254,26 @@ function showMapProviderNotice(m,text){
 function addDualBasemap(m){
   const osm=makeOsmLayer();
   const carto=makeCartoLayer();
-  const bases={'🗺️ OpenStreetMap':osm};
+  const esri=makeEsriLayer();
+  const bases={'🗺️ OpenStreetMap':osm,'🌐 Esri World Street Map':esri};
   if(carto)bases['🚗 CARTO Voyager']=carto;
 
   const pref=localStorage.getItem(MAP_PREF_KEY);
-  let current=(pref==='carto'&&carto)?carto:osm;
+  let current=(pref==='carto'&&carto)?carto:(pref==='esri'?esri:osm);
   current.addTo(m);
 
   const ctl=L.control.layers(bases,null,{collapsed:true,position:'topright'}).addTo(m);
+  let switching=false,osmErrors=0,cartoErrors=0,esriErrors=0;
+  let osmFallbackTimer=null;
 
-  let switching=false;
-  let osmErrors=0;
-  let cartoErrors=0;
-
+  function removeBases(){
+    for(const layer of [osm,carto,esri])if(layer&&m.hasLayer(layer))m.removeLayer(layer);
+  }
   function switchTo(layer,name,key,reason){
     if(!layer||switching||m.hasLayer(layer))return;
     switching=true;
     try{
-      if(m.hasLayer(osm))m.removeLayer(osm);
-      if(carto&&m.hasLayer(carto))m.removeLayer(carto);
+      removeBases();
       layer.addTo(m);
       current=layer;
       localStorage.setItem(MAP_PREF_KEY,key);
@@ -279,51 +287,51 @@ function addDualBasemap(m){
   m.on('baselayerchange',e=>{
     current=e.layer;
     if(e.layer===carto)localStorage.setItem(MAP_PREF_KEY,'carto');
+    else if(e.layer===esri)localStorage.setItem(MAP_PREF_KEY,'esri');
     else localStorage.setItem(MAP_PREF_KEY,'osm');
   });
 
-  // OSM 若遭 403 / Blocked，Leaflet 會觸發 tileerror。
-  // 原本要累積 3 次才切換，手機上會先看到大片 blocked。
-  // 現在第一個錯誤先等待 180ms；若又出錯或 tile 沒恢復，立即切 CARTO。
-  let osmFallbackTimer=null;
+  // Leaflet 的 tileerror 無法直接可靠讀到 HTTP status，但 403/404/網路失敗都會進這裡。
+  // OSM 一旦連續錯誤，優先 CARTO；沒有 CARTO Key 時直接切 Esri。
   osm.on('tileerror',()=>{
     osmErrors++;
-    if(!carto||!m.hasLayer(osm))return;
-
+    if(!m.hasLayer(osm))return;
+    const fallback=carto||esri;
+    const fallbackName=carto?'CARTO Voyager':'Esri World Street Map';
+    const fallbackKey=carto?'carto':'esri';
     if(osmErrors>=2){
       if(osmFallbackTimer)clearTimeout(osmFallbackTimer);
-      switchTo(carto,'CARTO Voyager','carto','OSM 圖磚載入失敗');
+      switchTo(fallback,fallbackName,fallbackKey,'OSM 圖磚遭封鎖或載入失敗');
       return;
     }
-
     if(!osmFallbackTimer){
       osmFallbackTimer=setTimeout(()=>{
-        if(osmErrors>0 && m.hasLayer(osm)){
-          switchTo(carto,'CARTO Voyager','carto','OSM 圖磚載入失敗');
-        }
+        if(osmErrors>0&&m.hasLayer(osm))switchTo(fallback,fallbackName,fallbackKey,'OSM 圖磚遭封鎖或載入失敗');
       },180);
     }
   });
-
   osm.on('tileload',()=>{
-    // 有成功載入就代表 OSM 目前可用，清除短暫錯誤計數。
     osmErrors=0;
     if(osmFallbackTimer){clearTimeout(osmFallbackTimer);osmFallbackTimer=null;}
   });
 
-  // CARTO 也可能因 Key / 網路錯誤失敗；若使用者正在 CARTO，
-  // 且 OSM 尚可用，則自動回 OSM，避免只剩灰底。
+  // CARTO 失敗時不要再切回已經 403 的 OSM，直接改用 Esri。
   if(carto){
     carto.on('tileerror',()=>{
       cartoErrors++;
-      if(cartoErrors>=2 && m.hasLayer(carto)){
-        switchTo(osm,'OpenStreetMap','osm','CARTO 圖磚載入失敗');
-      }
+      if(cartoErrors>=2&&m.hasLayer(carto))switchTo(esri,'Esri World Street Map','esri','CARTO 圖磚載入失敗');
     });
     carto.on('tileload',()=>{cartoErrors=0});
   }
 
-  return {osm,carto,ctl};
+  // Esri 若也暫時失敗，只在 OSM 沒有已知錯誤時才回 OSM，避免 OSM↔Esri 無限切換。
+  esri.on('tileerror',()=>{
+    esriErrors++;
+    if(esriErrors>=3&&m.hasLayer(esri)&&osmErrors===0) switchTo(osm,'OpenStreetMap','osm','Esri 圖磚載入失敗');
+  });
+  esri.on('tileload',()=>{esriErrors=0});
+
+  return {osm,carto,esri,ctl};
 }
 
 function tab(id){
