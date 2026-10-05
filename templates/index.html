@@ -156,6 +156,22 @@ const MQTT_BROKER=localStorage.getItem('cg_mqtt_broker')||'wss://broker.emqx.io:
 const MQTT_ROOT='carpool-go/v1';
 let mqttClient=null,mqttRideId=null,mqttConnected=false,mqttGeneration=0,chatSeenIds=new Set(),unreadCount=0,unreadRideId=null;
 let liveLocationCache=new Map();let lastLocationPublishAt=0;let lastBrowserLocation=null;let geoWatchId=null;let homeMapRideId=null;let homeRouteBounds=null;
+// 2026-10-05 vNext：降低 Render/PostgreSQL 負載。
+// GPS 至少移動 15m 才寫 DB；即使瀏覽器連續回報相同座標，也不會反覆 POST。
+// force=true 僅用於「剛加入行程」等需要立刻補送目前位置的情境。
+const GPS_MIN_MOVE_METERS=15;
+const GPS_MIN_SAVE_INTERVAL_MS=3000;
+let lastSavedLocation=null;
+let lastLocationSaveAt=0;
+let locationSaveBusy=false;
+
+// 單一 scheduler + 各 API 自己的節流時間，避免切換 Tab 時產生重複 timer。
+const POLL_TRIP_MS=5000;
+const POLL_LOCATIONS_MS=3000;
+const POLL_MESSAGES_MS=5000;
+const POLL_RIDES_MS=5000;
+let pollTimerId=null;
+let lastTripPollAt=0,lastLocationsPollAt=0,lastMessagesPollAt=0,lastRidesPollAt=0;
 // 2026-10-05：找共乘卡片 / 我的行程都要有小型路線預覽地圖。
 let miniMaps={};
 let tripMiniMap=null;
@@ -351,7 +367,9 @@ async function init(){
   loadRides();
   startGeolocationWatch();
   requestLocationNow();
-  setInterval(refresh,2000);
+
+  // vNext：只允許一個輪詢 scheduler。refresh() 內再依 API 類型做 3/5 秒節流。
+  if(pollTimerId==null)pollTimerId=setInterval(refresh,1000);
 }
 async function rename(){let n=prompt('匿名顯示名稱',me.nickname);if(!n)return;me=await api('/me/',{method:'PATCH',body:JSON.stringify({nickname:n})});who.innerHTML=`ID ${me.clientId.slice(-6)}｜<u style="cursor:pointer" onclick="rename()">${me.nickname}</u>｜SQLite/PostgreSQL`}
 async function loadRides(){
@@ -889,10 +907,8 @@ async function loadTrip(){
     renderHome();
   }
 
-  loadMsgs();
+  // vNext：訊息與定位改由 refresh() 各自節流；loadTrip 不再造成連鎖 API 請求或 GPS 重複寫入。
   ensureMqttForActive();
-  syncLastLocationToActive();
-}
 
 function renderHome(){
   if(!active)return;
@@ -1121,37 +1137,61 @@ function requestLocationNow(){
     );
   }catch(e){onBrowserLocationError(e)}
 }
+function distanceMeters(a,b){
+  if(!a||!b)return Infinity;
+  const R=6371000,toRad=d=>d*Math.PI/180;
+  const dLat=toRad(b.lat-a.lat),dLng=toRad(b.lng-a.lng);
+  const x=Math.sin(dLat/2)**2+Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.sqrt(x));
+}
 function syncLastLocationToActive(){
   if(!active)return;
   if(lastBrowserLocation){
-    pushLoc(lastBrowserLocation.lat,lastBrowserLocation.lng,lastBrowserLocation.accuracy);
+    // 剛加入/建立行程時必須立即把目前位置補到該 ride，不受 15m 門檻限制。
+    pushLoc(lastBrowserLocation.lat,lastBrowserLocation.lng,lastBrowserLocation.accuracy,{force:true});
   }else{
     requestLocationNow();
   }
 }
 
-async function pushLoc(lat,lng,accuracy){
+async function pushLoc(lat,lng,accuracy,{force=false}={}){
   rememberBrowserLocation(lat,lng,accuracy);
   if(!active||!isLiveTrackingWindow(active))return;
   const rideId=active.id;
   const payload={clientId:cid,nickname:me?.nickname||'',lat:+lat,lng:+lng,accuracy:accuracy==null?null:+accuracy,updatedAt:new Date().toISOString()};
   upsertLiveLocation(payload);
 
-  // API 永久保存，讓稍後加入/重新整理的人也能取得最新定位。
-  try{
-    await api(`/rides/${rideId}/locations/`,{
-      method:'POST',
-      body:JSON.stringify({lat:+lat,lng:+lng,accuracy:accuracy==null?null:+accuracy})
-    });
-  }catch(e){
-    console.warn('save live location failed',e);
-    updateLocationStatus('⚠️ 已取得 GPS，但寫入 Django 定位資料失敗：'+e.message,true);
+  // vNext：瀏覽器 watchPosition 可能每秒回報且座標只有 GPS 漂移。
+  // 本機 marker 仍可立即更新，但 DB 只在「移動 >=15m」且距上次寫入 >=3秒時保存。
+  const now=Date.now();
+  const moved=distanceMeters(lastSavedLocation,{lat:+lat,lng:+lng});
+  const shouldSave=force || !lastSavedLocation ||
+    (moved>=GPS_MIN_MOVE_METERS && now-lastLocationSaveAt>=GPS_MIN_SAVE_INTERVAL_MS);
+
+  if(shouldSave && !locationSaveBusy){
+    locationSaveBusy=true;
+    try{
+      await api(`/rides/${rideId}/locations/`,{
+        method:'POST',
+        body:JSON.stringify({lat:+lat,lng:+lng,accuracy:accuracy==null?null:+accuracy})
+      });
+      lastSavedLocation={lat:+lat,lng:+lng};
+      lastLocationSaveAt=Date.now();
+
+      // 前一次若顯示 500/逾時警告，只要下一次寫入成功就自動恢復正常狀態。
+      updateLocationStatus(`📡 定位同步正常：GPS 精度約 ±${Math.round(accuracy||0)} m。`,false);
+    }catch(e){
+      console.warn('save live location failed',e);
+      updateLocationStatus('⚠️ 已取得 GPS，但寫入 Django 定位資料失敗：'+e.message,true);
+    }finally{
+      locationSaveBusy=false;
+    }
   }
 
   // MQTT 即時廣播；資料庫仍是主要備援。
-  const now=Date.now();
-  if(mqttClient&&mqttConnected&&now-lastLocationPublishAt>=1500){
-    lastLocationPublishAt=now;
+  const mqttNow=Date.now();
+  if(mqttClient&&mqttConnected&&mqttNow-lastLocationPublishAt>=1500){
+    lastLocationPublishAt=mqttNow;
     try{
       mqttClient.publish(locationTopic(rideId),JSON.stringify({type:'location',rideId,...payload}),{qos:0,retain:false});
     }catch(e){console.warn('publish live location failed',e)}
@@ -1303,7 +1343,7 @@ async function ensureMqttForActive(){
   mqttRideId=active.id;
   resetUnreadForRide(active.id);
 
-  if(typeof mqtt==='undefined'){setMqttStatus('MQTT 程式庫載入失敗；目前改用 API 每 2 秒同步',false);return;}
+  if(typeof mqtt==='undefined'){setMqttStatus('MQTT 程式庫載入失敗；目前改用 API 定期同步',false);return;}
 
   const connectionRideId=String(active.id);
   const generation=++mqttGeneration;
@@ -1638,11 +1678,32 @@ async function refresh(){
   if(document.visibilityState!=='visible'||refreshBusy)return;
   refreshBusy=true;
   try{
-    await loadTrip();
-    if(find.style.display!=='none')await loadRides();
+    const now=Date.now();
+
+    // 行程本體 5 秒更新一次。MQTT 的 member_update 仍可在成員異動時立即觸發 loadTrip()。
+    if(now-lastTripPollAt>=POLL_TRIP_MS){
+      lastTripPollAt=now;
+      await loadTrip();
+    }
+
+    // 「找共乘」只有頁面可見時才抓，而且最多 5 秒一次。
+    if(find.style.display!=='none' && now-lastRidesPollAt>=POLL_RIDES_MS){
+      lastRidesPollAt=now;
+      await loadRides();
+    }
+
     if(active){
-      loadLocs();
-      // loadTrip() 已更新訊息，這裡不要再重複 loadMsgs()。
+      // 成員位置 3 秒一次；MQTT 正常時中間位置仍會即時更新 marker。
+      if(now-lastLocationsPollAt>=POLL_LOCATIONS_MS){
+        lastLocationsPollAt=now;
+        await loadLocs();
+      }
+
+      // 歷史訊息/API 備援 5 秒一次；即時訊息主要走 MQTT。
+      if(now-lastMessagesPollAt>=POLL_MESSAGES_MS){
+        lastMessagesPollAt=now;
+        await loadMsgs();
+      }
     }
   }catch(e){
     console.warn('refresh failed',e);
