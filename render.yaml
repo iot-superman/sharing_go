@@ -1,0 +1,23 @@
+databases:
+  - name: carpool-go-db
+    plan: free
+    databaseName: carpool_go
+    user: carpool_go
+services:
+  - type: web
+    name: carpool-go
+    runtime: python
+    plan: free
+    buildCommand: ./build.sh
+    startCommand: python -m gunicorn carpool_go.asgi:application -k uvicorn.workers.UvicornWorker
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: carpool-go-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "0"
+      - key: WEB_CONCURRENCY
+        value: "2"

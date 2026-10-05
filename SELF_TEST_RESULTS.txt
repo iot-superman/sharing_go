@@ -1,0 +1,27 @@
+Carpool Go Django - self test report
+Date: 2026-10-05
+
+PASS 1 - Frontend full inline JavaScript syntax
+  node --check: PASS
+
+PASS 2 - Python source syntax
+  python -m py_compile rides/views.py rides/urls.py carpool_go/settings.py carpool_go/urls.py manage.py: PASS
+
+PASS 3 - Magnifier address search flow
+  Simulated /geocode/ result -> searchAddress('meet') -> coords.meet saved: PASS
+
+PASS 4 - Create ride with typed addresses
+  coords cleared -> createRide() automatically geocodes meeting and destination -> POST /rides/: PASS
+
+PASS 5 - Create ride payload
+  date/time/maxPeople/mode/fare/meeting/destination/lat/lng validated in smoke test: PASS
+
+PASS 6 - Successful create UI state
+  server returns ride.id -> switches to trip -> button restored -> success text: PASS
+
+PASS 7 - Required DOM IDs and handlers
+  createRideBtn/createStatus/date/time/max/meet/dest/mode/fare/note present: PASS
+
+LIMITATION
+  This environment cannot install Django packages from the Internet, so an actual Django HTTP runtime/database POST could not be executed here.
+  Backend route/model field compatibility was checked statically and Python syntax compiled successfully.

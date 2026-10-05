@@ -1,0 +1,182 @@
+@echo off
+setlocal EnableExtensions EnableDelayedExpansion
+title Carpool Go Django + Cloudflare Quick Tunnel
+
+cd /d "%~dp0"
+
+echo.
+echo ============================================================
+echo Carpool Go Django + Cloudflare Quick Tunnel
+echo ============================================================
+echo.
+
+REM ------------------------------------------------------------
+REM 1. Check Python
+REM ------------------------------------------------------------
+where python >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] Python was not found in PATH.
+    echo Install Python and enable "Add Python to PATH".
+    pause
+    exit /b 1
+)
+
+echo [1/6] Python:
+python --version
+echo.
+
+REM ------------------------------------------------------------
+REM 2. Find cloudflared
+REM ------------------------------------------------------------
+set "CLOUDFLARED="
+
+where cloudflared >nul 2>nul
+if not errorlevel 1 (
+    set "CLOUDFLARED=cloudflared"
+)
+
+if not defined CLOUDFLARED if exist "%ProgramFiles%\cloudflared\cloudflared.exe" (
+    set "CLOUDFLARED=%ProgramFiles%\cloudflared\cloudflared.exe"
+)
+
+if not defined CLOUDFLARED if exist "%ProgramFiles(x86)%\cloudflared\cloudflared.exe" (
+    set "CLOUDFLARED=%ProgramFiles(x86)%\cloudflared\cloudflared.exe"
+)
+
+if not defined CLOUDFLARED (
+    echo [2/6] cloudflared was not found.
+    echo.
+
+    where winget >nul 2>nul
+    if errorlevel 1 (
+        echo [ERROR] winget was not found.
+        echo Download cloudflared from:
+        echo https://developers.cloudflare.com/tunnel/downloads/
+        echo.
+        pause
+        exit /b 1
+    )
+
+    choice /C YN /N /M "Install cloudflared with winget now? [Y/N] "
+    if errorlevel 2 (
+        echo Cancelled.
+        pause
+        exit /b 1
+    )
+
+    echo.
+    winget install --id Cloudflare.cloudflared --exact --accept-package-agreements --accept-source-agreements
+    if errorlevel 1 (
+        echo.
+        echo [ERROR] cloudflared installation failed.
+        pause
+        exit /b 1
+    )
+
+    REM Try common install locations again.
+    if exist "%ProgramFiles%\cloudflared\cloudflared.exe" (
+        set "CLOUDFLARED=%ProgramFiles%\cloudflared\cloudflared.exe"
+    )
+    if not defined CLOUDFLARED if exist "%ProgramFiles(x86)%\cloudflared\cloudflared.exe" (
+        set "CLOUDFLARED=%ProgramFiles(x86)%\cloudflared\cloudflared.exe"
+    )
+    if not defined CLOUDFLARED (
+        set "CLOUDFLARED=cloudflared"
+    )
+)
+
+echo [2/6] cloudflared:
+"%CLOUDFLARED%" --version
+if errorlevel 1 (
+    echo.
+    echo [ERROR] cloudflared cannot be started.
+    echo Close this window and run this BAT again.
+    pause
+    exit /b 1
+)
+echo.
+
+REM ------------------------------------------------------------
+REM 3. Install Python requirements
+REM ------------------------------------------------------------
+echo [3/6] Installing Python requirements...
+python -m pip install -r requirements.txt
+if errorlevel 1 (
+    echo.
+    echo [ERROR] pip install failed.
+    pause
+    exit /b 1
+)
+echo.
+
+REM ------------------------------------------------------------
+REM 4. Run migrations
+REM ------------------------------------------------------------
+echo [4/6] Running Django migrations...
+python manage.py migrate
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Django migration failed.
+    pause
+    exit /b 1
+)
+echo.
+
+REM ------------------------------------------------------------
+REM 5. Start Django in another CMD window
+REM ------------------------------------------------------------
+echo [5/6] Starting Django on port 8000...
+start "Carpool Go Django 8000" cmd /k "cd /d ""%~dp0"" && python manage.py runserver 0.0.0.0:8000"
+
+echo Waiting for Django...
+set /a WAIT_COUNT=0
+
+:WAIT_DJANGO
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8000/' -TimeoutSec 2 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>nul
+
+if not errorlevel 1 goto DJANGO_READY
+
+set /a WAIT_COUNT+=1
+if !WAIT_COUNT! GEQ 25 (
+    echo.
+    echo [WARNING] Django did not answer within 25 seconds.
+    echo Check the other Django CMD window for errors.
+    echo.
+    choice /C YN /N /M "Continue and start Cloudflare Tunnel anyway? [Y/N] "
+    if errorlevel 2 exit /b 1
+    goto DJANGO_READY
+)
+
+timeout /t 1 /nobreak >nul
+goto WAIT_DJANGO
+
+:DJANGO_READY
+echo Django is ready:
+echo http://127.0.0.1:8000
+echo.
+
+REM ------------------------------------------------------------
+REM 6. Start Cloudflare Quick Tunnel
+REM ------------------------------------------------------------
+echo [6/6] Starting Cloudflare Quick Tunnel...
+echo.
+echo ============================================================
+echo Look for a URL like:
+echo.
+echo   https://something.trycloudflare.com
+echo.
+echo Copy that HTTPS URL to your iPhone Safari or LINE browser.
+echo DO NOT type "xx.trycloudflare.com" yourself.
+echo The real URL is generated by cloudflared and printed below.
+echo.
+echo Press Ctrl+C to stop the tunnel.
+echo ============================================================
+echo.
+
+"%CLOUDFLARED%" tunnel --url http://127.0.0.1:8000
+
+echo.
+echo Cloudflare Tunnel stopped.
+pause
+endlocal
