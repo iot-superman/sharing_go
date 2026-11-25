@@ -3,6 +3,8 @@ import os, dj_database_url
 BASE_DIR=Path(__file__).resolve().parent.parent
 SECRET_KEY=os.getenv('SECRET_KEY','dev-only-change-me')
 DEBUG=os.getenv('DEBUG','1' if not os.getenv('RENDER') else '0')=='1'
+# Update this date whenever the Render database is replaced.
+DATABASE_EXPIRES_ON=os.getenv('DATABASE_EXPIRES_ON','2026-12-25')
 # 2026-10-05：開發模式允許區網 IP 連入；Render 正式環境仍採白名單。
 if DEBUG:
     ALLOWED_HOSTS=['*']
