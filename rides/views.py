@@ -6,10 +6,16 @@ from datetime import date, time, datetime
 from django.http import JsonResponse, HttpResponseBadRequest, HttpResponseForbidden, HttpResponseNotAllowed
 from django.shortcuts import render, get_object_or_404
 from django.db import transaction
+from django.conf import settings
 from django.views.decorators.csrf import csrf_exempt
 from .models import Profile,Ride,RideMember,Message,Location
 
-def home(request): return render(request,'index.html')
+def home(request):
+    try:
+        expires_on = date.fromisoformat(settings.DATABASE_EXPIRES_ON)
+    except ValueError:
+        expires_on = None
+    return render(request, 'index.html', {'database_expires_on': expires_on})
 def health(request): return JsonResponse({'ok':True})
 
 @lru_cache(maxsize=512)
